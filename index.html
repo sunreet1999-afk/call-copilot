@@ -129,10 +129,19 @@ label{display:flex;flex-direction:column;gap:4px;font:500 12px var(--mono);color
     <label for="cMic">Mic language
       <select id="cMic"><option value="en-US">English (US)</option><option value="en-IN">English (India)</option><option value="hi-IN">Hindi</option></select>
     </label>
-    <label for="cPause">Pause detect: <span id="pauseVal">1.2</span> sec
-      <input id="cPause" type="range" min="0.6" max="2.5" step="0.1">
+    <label for="cEngine">Mic engine
+      <select id="cEngine"><option value="chrome">Chrome (free, pause timer)</option><option value="flux">Deepgram Flux (smart pause)</option></select>
     </label>
-    <p class="note">Itni der chup rehne pe baat poori maani jaati hai. Client ke chup hote hi agli line pehle se banna shuru ho jaati hai.</p>
+    <div id="dgBox" hidden>
+      <label for="cDgKey">Deepgram API key<input id="cDgKey" type="password" placeholder="Deepgram key" autocomplete="off"></label>
+      <p class="note" style="margin-top:6px">console.deepgram.com pe free signup, $200 credit milta hai. Flux khud samajhta hai ki baat kab khatam hui. Key sirf is browser mein save rehti hai.</p>
+    </div>
+    <div id="pauseBox">
+      <label for="cPause">Pause detect: <span id="pauseVal">1.2</span> sec
+        <input id="cPause" type="range" min="0.6" max="2.5" step="0.1">
+      </label>
+      <p class="note" style="margin-top:6px">Itni der chup rehne pe baat poori maani jaati hai. Client ke chup hote hi agli line pehle se banna shuru ho jaati hai.</p>
+    </div>
     <p class="note">Laptop speaker pe call rakho, headphones nahi. Tabhi mic dono awaaz sunega.</p>
   </aside>
 </div>
@@ -144,7 +153,7 @@ const DEFAULTS = {
   cOffer: "AI automation for restaurants. I run restaurants myself in India, so I know the daily problems. We find the restaurant's biggest pain point (missed calls, online orders, reviews, inventory, staff reports) and build an AI fix. Client pays only if the problem actually gets solved.",
   cGoal: "Find their biggest operational pain point and book a 15-minute follow-up call.",
   cObj: "Why do you want to know? -> I want to help restaurant owners; I run restaurants too and see the same problems.\nNo time -> Totally get it, one quick question and I'll let you go.\nHow much does it cost? -> Nothing unless it actually solves your problem.\nNot interested -> No problem. Just curious, what takes most of your time every week?",
-  cLang: "English", cMic: "en-US", cPause: "1.2", cKey: ""
+  cLang: "English", cMic: "en-US", cPause: "1.2", cKey: "", cEngine: "chrome", cDgKey: ""
 };
 const FIELDS = Object.keys(DEFAULTS);
 function load(){ let s={}; try{ s=JSON.parse(localStorage.getItem("copilotSetup")||"{}") }catch(e){}
@@ -152,7 +161,9 @@ function load(){ let s={}; try{ s=JSON.parse(localStorage.getItem("copilotSetup"
 function save(){ const s={}; FIELDS.forEach(f=>s[f]=$(f).value); try{ localStorage.setItem("copilotSetup",JSON.stringify(s)) }catch(e){} }
 FIELDS.forEach(f=>{ $(f).addEventListener("input",save); $(f).addEventListener("change",save); });
 $("cPause").addEventListener("input",()=>$("pauseVal").textContent=$("cPause").value);
-load();
+function syncEngine(){ const f = $("cEngine").value==="flux"; $("dgBox").hidden = !f; $("pauseBox").hidden = f; }
+$("cEngine").addEventListener("change", syncEngine);
+load(); syncEngine();
 
 // ---------- state ----------
 let transcript = [
@@ -313,11 +324,11 @@ async function askAI(fresh){
 function meSaid(text){ if(!text) return; isExample=false; transcript.push({who:"me", text}); renderLog(); clearLive(); setTurn("client"); }
 function clientSaid(text){ text=text.trim(); if(!text) return; isExample=false; transcript.push({who:"client", text}); renderLog(); clearLive(); askAI(); }
 
-$("saidMain").onclick = ()=>{ const spoken=(buf+" "+partial).trim(); meSaid(spoken || current.line); };
+$("saidMain").onclick = ()=>{ fluxForceEnd(); const spoken=(buf+" "+partial).trim(); meSaid(spoken || current.line); };
 $("regen").onclick = ()=>askAI(true);
-$("doneBtn").onclick = ()=>{ const t=(buf+" "+partial).trim(); if(t) clientSaid(t); };
-$("startBtn").onclick = ()=>{ cancelSpec(); transcript=[]; isExample=false; clearLive(); renderLog(); startMic(); askAI(true); };
-$("clientFirst").onclick = ()=>{ cancelSpec(); transcript=[]; isExample=false; clearLive(); renderLog(); startMic();
+$("doneBtn").onclick = ()=>{ const t=(buf+" "+partial).trim(); if(t){ fluxForceEnd(); clientSaid(t); } };
+$("startBtn").onclick = ()=>{ cancelSpec(); $("timing").textContent=""; transcript=[]; isExample=false; clearLive(); renderLog(); startMic(); askAI(true); };
+$("clientFirst").onclick = ()=>{ cancelSpec(); $("timing").textContent=""; transcript=[]; isExample=false; clearLive(); renderLog(); startMic();
   showSuggestion({line:"Client ko sun raha hoon…", alt:"", stage:"Opening"}); setTurn("client"); };
 $("stopBtn").onclick = ()=>{ if(ctl) ctl.abort(); cancelSpec(); stopMic(); clearLive(); setTurn("idle","Call khatam"); };
 $("typeForm").addEventListener("submit", e=>{ e.preventDefault(); spokeAt = 0; const v=$("typeInput").value; $("typeInput").value=""; clientSaid(v); });
@@ -341,6 +352,7 @@ function endOfSpeech(){
   else if(turn==="client") clientSaid(t);
 }
 function startMic(){
+  if($("cEngine").value==="flux") return startFlux();
   if(!SR){ micWarn("Is browser mein mic transcription nahi hai. Google Chrome use karo, ya client ki baat type karo."); return; }
   if(micOn) return;
   rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = $("cMic").value;
@@ -362,11 +374,67 @@ function startMic(){
         : "Mic block hai. Address bar mein mic icon pe click karke Allow karo, phir 'Call shuru karo' dabao. Claude ke andar mic nahi chalta, downloaded version use karo."); }
     else if(ev.error==="audio-capture"){ micWarn("Mic nahi mila. Windows Settings > Privacy > Microphone mein Chrome ko allow karo."); }
   };
-  rec.onend = ()=>{ if(micOn){ try{ rec.start(); }catch(e){} } };
+  rec.onend = ()=>{ if(micOn && rec){ try{ rec.start(); }catch(e){} } };
   try{ rec.start(); micOn = true; micWarn(""); }catch(e){ micWarn("Mic start nahi hua. Type karke use karo."); }
 }
-function stopMic(){ micOn=false; clearTimeout(silenceTimer); clearTimeout(specTimer); try{ rec && rec.stop(); }catch(e){} }
-$("cMic").addEventListener("change", ()=>{ if(micOn){ stopMic(); setTimeout(startMic,300); } });
+function stopMic(){ micOn=false; clearTimeout(silenceTimer); clearTimeout(specTimer);
+  if(rec){ const r = rec; rec = null; try{ r.stop(); }catch(e){} }
+  stopFlux(); }
+["cMic","cEngine"].forEach(id=>$(id).addEventListener("change", ()=>{ if(micOn){ stopMic(); setTimeout(startMic,300); } }));
+
+// ---------- mic: Deepgram Flux (model khud batata hai ki baat kab khatam hui) ----------
+// 16 kHz mic audio -> 80 ms Int16 chunks (Flux ka recommended size)
+const PCM_WORKLET = `registerProcessor("pcm", class extends AudioWorkletProcessor{
+  constructor(){ super(); this.buf = new Int16Array(1280); this.n = 0; }
+  process(inputs){ const ch = inputs[0][0];
+    if(ch) for(let k=0;k<ch.length;k++){ const s = Math.max(-1, Math.min(1, ch[k]));
+      this.buf[this.n++] = s<0 ? s*32768 : s*32767;
+      if(this.n===1280){ this.port.postMessage(this.buf.buffer, [this.buf.buffer]); this.buf = new Int16Array(1280); this.n = 0; } }
+    return true; } });`;
+let flux = null;   // {ws, ctx, stream}
+async function startFlux(){
+  const key = $("cDgKey").value.trim();
+  if(!key){ micWarn("Setup mein Deepgram key daalo, ya Mic engine 'Chrome' kar do."); return; }
+  if(flux) return;
+  const f = flux = {}; micOn = true;
+  try{
+    f.stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:true, autoGainControl:true}});
+    f.ctx = new AudioContext({sampleRate:16000});
+    await f.ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([PCM_WORKLET], {type:"text/javascript"})));
+  }catch(e){
+    if(flux===f){ stopFlux(); micOn = false; }
+    micWarn(e?.name==="NotAllowedError" ? "Mic block hai. Address bar mein mic icon pe click karke Allow karo, phir 'Call shuru karo' dabao."
+      : "Mic start nahi hua: "+(e?.message||e)); return;
+  }
+  if(flux!==f){ f.stream.getTracks().forEach(t=>t.stop()); f.ctx.close().catch(()=>{}); return; }   // beech mein stop dab gaya
+  const model = $("cMic").value==="en-US" ? "model=flux-general-en" : "model=flux-general-multi&language_hint=hi&language_hint=en";
+  f.ws = new WebSocket(`wss://api.deepgram.com/v2/listen?${model}&encoding=linear16&sample_rate=16000&eager_eot_threshold=0.5`, ["token", key]);
+  const node = new AudioWorkletNode(f.ctx, "pcm");
+  node.port.onmessage = e=>{ if(f.ws.readyState===1) f.ws.send(e.data); };
+  f.ctx.createMediaStreamSource(f.stream).connect(node); node.connect(f.ctx.destination);   // worklet sirf silence output karta hai
+  f.ws.onopen = ()=>micWarn("");
+  f.ws.onmessage = e=>{ let m; try{ m = JSON.parse(e.data); }catch(err){ return; } onFlux(m); };
+  f.ws.onclose = ev=>{ if(flux!==f) return; stopFlux(); micOn = false;
+    micWarn(`Deepgram se connection band ho gaya (code ${ev.code}). Key sahi hai ya credit bacha hai, check karo. Phir 'Call shuru karo' dabao.`); };
+}
+function stopFlux(){
+  const f = flux; flux = null; if(!f) return;
+  try{ if(f.ws?.readyState===1) f.ws.send('{"type":"CloseStream"}'); f.ws?.close(); }catch(e){}
+  f.stream?.getTracks().forEach(t=>t.stop()); f.ctx?.close().catch(()=>{});
+}
+// button se turn khatam kiya: Flux ka turn bhi khatam karo, warna uska EndOfTurn agle turn mein aa jaata
+function fluxForceEnd(){ if(flux?.ws?.readyState===1) flux.ws.send('{"type":"ForceEndTurn"}'); }
+function onFlux(m){
+  if(m.type==="Error" || m.type==="FatalError"){ micWarn("Deepgram error: "+(m.description || m.code || "")); return; }
+  if(m.type!=="TurnInfo") return;
+  if(m.event==="EndOfTurn" && m.trigger==="manual") return;   // button wala turn, pehle hi commit ho chuka
+  if(turn!=="me" && turn!=="client") return;                 // AI soch raha hai: ignore
+  const t = (m.transcript || "").trim();
+  if(m.event==="EndOfTurn"){ clearLive(); if(!t) return; if(turn==="me") meSaid(t); else clientSaid(t); return; }
+  if(t !== buf){ buf = t; partial = ""; showLive(); if(turn==="client") spokeAt = performance.now(); }
+  if(m.event==="EagerEndOfTurn" && turn==="client") startSpec(t);
+  else if(m.event==="TurnResumed") cancelSpec();
+}
 
 // example state at rest
 renderLog(); current = {line:$("line").textContent, alt:$("alt").textContent, stage:"Discovery"};
