@@ -132,7 +132,7 @@ label{display:flex;flex-direction:column;gap:4px;font:500 12px var(--mono);color
     <label for="cPause">Pause detect: <span id="pauseVal">1.2</span> sec
       <input id="cPause" type="range" min="0.6" max="2.5" step="0.1">
     </label>
-    <p class="note">Line poori lage to isse aadha wait karta hai, aur client ke chup hote hi agli line banana shuru kar deta hai.</p>
+    <p class="note">Itni der chup rehne pe baat poori maani jaati hai. Client ke chup hote hi agli line pehle se banna shuru ho jaati hai.</p>
     <p class="note">Laptop speaker pe call rakho, headphones nahi. Tabhi mic dono awaaz sunega.</p>
   </aside>
 </div>
@@ -224,12 +224,12 @@ function parse(text){
 function showCost(){ $("cost").textContent = `${calls} lines · approx $${spent.toFixed(4)} kharch`; }
 async function callAnthropic(prompt, signal, onText){
   const key = $("cKey").value.trim(); if(!key) throw {code:"nokey"};
-  // Haiku 5.5 thinks by default; for one spoken line that is pure delay, so thinking is off.
-  // If the API ever rejects that (400), retry once with the plain request.
+  // Haiku 5.5 thinks by default; low effort keeps a short think (better lines) without the full delay.
+  // Thinking counts toward max_tokens, so leave room. If the API ever rejects this (400), retry plain.
   const send = fast => fetch("https://api.anthropic.com/v1/messages",{method:"POST",signal,
     headers:{"content-type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-    body:JSON.stringify({model:"claude-haiku-5-5",max_tokens:200,stream:true,messages:[{role:"user",content:prompt}],
-      ...(fast ? {thinking:{type:"disabled"}, output_config:{effort:"low"}} : {})})});
+    body:JSON.stringify({model:"claude-haiku-5-5",max_tokens:1024,stream:true,messages:[{role:"user",content:prompt}],
+      ...(fast ? {output_config:{effort:"low"}} : {})})});
   let res = await send(true);
   if(res.status===400) res = await send(false);
   if(!res.ok){ const j = await res.json().catch(()=>({})); throw {code: res.status===401?"badkey":"api", message:j?.error?.message||("HTTP "+res.status)}; }
@@ -333,19 +333,6 @@ document.addEventListener("keydown", e=>{
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, micOn = false, silenceTimer = null, specTimer = null;
 function micWarn(t){ $("micWarn").textContent=t; $("micWarn").hidden=!t; }
-const DONE_WORDS = new Set(("yes yeah yep no nope okay ok sure right thanks fine great good alright bye busy interested " +
-  "hai hain tha thi haan han nahi nahin na ji theek thik accha achha acha bolo batao kya kyun kaise chahiye hoon hu ho raha rahi rahe gaya gayi diya liya " +
-  "है हैं था थी हाँ हां नहीं ना जी ठीक अच्छा बोलो बताओ क्या क्यों कैसे चाहिए हूँ हूं हो रहा रही रहे गया गई दिया").split(" "));
-const MORE_WORDS = new Set(("and but so because or the a an to of for with my your if um uh like " +
-  "aur lekin par toh ki ke ka mein se ko jo kyunki matlab और लेकिन पर तो कि के का की में से को जो क्योंकि मतलब").split(" "));
-// line poori lage to aadha wait, adhoori lage ("and", "toh"...) to thoda zyada
-function pauseFor(text){
-  const base = parseFloat($("cPause").value)*1000, t = text.trim();
-  const w = (t.toLowerCase().split(/\s+/).pop() || "").replace(/[^\p{L}\p{M}\p{N}]/gu,"");
-  if(/[?.!।]$/.test(t) || DONE_WORDS.has(w)) return Math.max(350, base*0.5);
-  if(MORE_WORDS.has(w)) return Math.min(2500, base*1.5);
-  return base;
-}
 function endOfSpeech(){
   clearTimeout(specTimer);
   const t = (buf+" "+partial).trim();
@@ -366,7 +353,7 @@ function startMic(){
     const heard = (buf+" "+partial).trim();
     if(turn==="client") spokeAt = performance.now();
     clearTimeout(silenceTimer); clearTimeout(specTimer);
-    silenceTimer = setTimeout(endOfSpeech, pauseFor(heard));
+    silenceTimer = setTimeout(endOfSpeech, parseFloat($("cPause").value)*1000);
     if(turn==="client") specTimer = setTimeout(()=>startSpec(heard), 300);
   };
   rec.onerror = ev=>{
