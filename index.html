@@ -397,9 +397,10 @@ document.addEventListener("keydown", e=>{
 
 // ---------- mic: hands-free turn taking ----------
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec = null, micOn = false, silenceTimer = null, specTimer = null;
+let rec = null, micOn = false, silenceTimer = null, specTimer = null, speechEndTimer = null, browserSpeechEnded = false;
 function micWarn(t){ $("micWarn").textContent=t; $("micWarn").hidden=!t; }
 function endOfSpeech(){
+  browserSpeechEnded = false; clearTimeout(speechEndTimer);
   clearActivityTimers();
   clearTimeout(specTimer);
   const t = (buf+" "+partial).trim();
@@ -412,17 +413,28 @@ function startMic(){
   if(!SR){ micWarn("Is browser mein mic transcription nahi hai. Google Chrome use karo, ya client ki baat type karo."); return; }
   if(micOn) return;
   rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = $("cMic").value;
+  rec.onspeechstart = ()=>{
+    if(turn!=="me" && turn!=="client") return;
+    browserSpeechEnded = false; clearTimeout(speechEndTimer); clearTimeout(silenceTimer); clearActivityTimers();
+    setActivity(turn==="me" ? "speaking-me" : "speaking",turn==="me" ? "Aap bol rahe hain…" : "Client bol raha hai…","Chrome ne awaaz detect kar li hai. Bolna poora hone tak sunta rahega.");
+  };
+  rec.onspeechend = ()=>{
+    if(turn!=="me" && turn!=="client") return;
+    browserSpeechEnded = true; clearTimeout(silenceTimer); clearActivityTimers();
+    silenceDeadline = performance.now()+500; showPauseCountdown();
+    speechEndTimer = setTimeout(endOfSpeech,500);
+  };
   rec.onresult = ev=>{
     if(turn!=="me" && turn!=="client") return;   // AI soch raha hai: ignore
     partial = "";
     for(let i=ev.resultIndex;i<ev.results.length;i++){ const r=ev.results[i];
       if(r.isFinal) buf += " "+r[0].transcript; else partial += r[0].transcript; }
     showLive();
-    scheduleActivityEnd(turn);
+    if(!browserSpeechEnded) scheduleActivityEnd(turn);
     const heard = (buf+" "+partial).trim();
     if(turn==="client") spokeAt = performance.now();
     clearTimeout(silenceTimer); clearTimeout(specTimer);
-    silenceTimer = setTimeout(endOfSpeech, parseFloat($("cPause").value)*1000);
+    if(!browserSpeechEnded) silenceTimer = setTimeout(endOfSpeech, parseFloat($("cPause").value)*1000);
     if(turn==="client") specTimer = setTimeout(()=>startSpec(heard), 300);
   };
   rec.onerror = ev=>{
@@ -434,7 +446,7 @@ function startMic(){
   rec.onend = ()=>{ if(micOn && rec){ try{ rec.start(); }catch(e){} } };
   try{ rec.start(); micOn = true; micWarn(""); }catch(e){ micWarn("Mic start nahi hua. Type karke use karo."); }
 }
-function stopMic(){ micOn=false; clearTimeout(silenceTimer); clearTimeout(specTimer); clearActivityTimers();
+function stopMic(){ micOn=false; browserSpeechEnded=false; clearTimeout(silenceTimer); clearTimeout(specTimer); clearTimeout(speechEndTimer); clearActivityTimers();
   if(rec){ const r = rec; rec = null; try{ r.stop(); }catch(e){} }
   stopFlux(); }
 ["cMic","cEngine"].forEach(id=>$(id).addEventListener("change", ()=>{ if(micOn){ stopMic(); setTimeout(startMic,300); } }));
