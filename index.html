@@ -2,6 +2,7 @@
 <title>Live Call Copilot</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://api.anthropic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Figtree:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
 /* Layout: call-desk console. Teleprompter card on top, live mic strip, transcript; setup on the side. */
@@ -45,6 +46,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .primary{background:var(--teal);border-color:var(--teal);color:var(--bg)}
 .danger{color:var(--live)}
 .prompter button{background:transparent;color:var(--prompt-ink);border-color:color-mix(in srgb,var(--prompt-ink) 35%,transparent)}
+.timing{font:500 12px var(--mono);opacity:.7;margin:0;min-height:1.5em}
 kbd{font:500 11px var(--mono);border:1px solid currentColor;border-radius:4px;padding:0 4px;margin-left:6px;opacity:.7}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
 .heard{font:500 12px var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:0 0 6px}
@@ -85,6 +87,7 @@ label{display:flex;flex-direction:column;gap:4px;font:500 12px var(--mono);color
         <button id="saidMain">Bol diya, ab client <kbd>1</kbd></button>
         <button id="regen">Doosri line do <kbd>R</kbd></button>
       </div>
+      <p class="timing" id="timing"></p>
     </section>
 
     <section class="card">
@@ -221,9 +224,14 @@ function parse(text){
 function showCost(){ $("cost").textContent = `${calls} lines · approx $${spent.toFixed(4)} kharch`; }
 async function callAnthropic(prompt, signal, onText){
   const key = $("cKey").value.trim(); if(!key) throw {code:"nokey"};
-  const res = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",signal,
+  // Haiku 5.5 thinks by default; for one spoken line that is pure delay, so thinking is off.
+  // If the API ever rejects that (400), retry once with the plain request.
+  const send = fast => fetch("https://api.anthropic.com/v1/messages",{method:"POST",signal,
     headers:{"content-type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-    body:JSON.stringify({model:"claude-haiku-5-5",max_tokens:200,stream:true,messages:[{role:"user",content:prompt}]})});
+    body:JSON.stringify({model:"claude-haiku-5-5",max_tokens:200,stream:true,messages:[{role:"user",content:prompt}],
+      ...(fast ? {thinking:{type:"disabled"}, output_config:{effort:"low"}} : {})})});
+  let res = await send(true);
+  if(res.status===400) res = await send(false);
   if(!res.ok){ const j = await res.json().catch(()=>({})); throw {code: res.status===401?"badkey":"api", message:j?.error?.message||("HTTP "+res.status)}; }
   const reader = res.body.getReader(), dec = new TextDecoder();
   // cost is added as tokens arrive, so cancelled speculative calls are counted too
@@ -244,9 +252,19 @@ async function callAnthropic(prompt, signal, onText){
   calls++; showCost();
   return text;
 }
-async function runAI(prompt, signal, onText){
-  if(sample) return (await sample(prompt, { modelTier:"quick", cache:false, signal, onText:({text})=>onText(text) })).text;
-  return callAnthropic(prompt, signal, onText);
+// meta.aiMs = request start se pehle shabd tak
+async function runAI(prompt, signal, onText, meta){
+  const t0 = performance.now();
+  const first = t=>{ if(!meta.aiMs) meta.aiMs = Math.round(performance.now()-t0); onText(t); };
+  if(sample) return (await sample(prompt, { modelTier:"quick", cache:false, signal, onText:({text})=>first(text) })).text;
+  return callAnthropic(prompt, signal, first);
+}
+let spokeAt = 0;   // client ka aakhri mic result kab aaya
+function showTiming(meta){
+  const parts = [];
+  if(spokeAt) parts.push(`client chup → line: ${Math.round(performance.now()-spokeAt)} ms`);
+  if(meta.aiMs) parts.push(`AI pehla shabd: ${meta.aiMs} ms`);
+  $("timing").textContent = parts.join(" · ");
 }
 
 // ---------- speculative: client ke chup hote hi line banana shuru, commit pe wahi use ----------
@@ -257,8 +275,8 @@ function startSpec(clientText){
   const key = norm(clientText); if(key.split(" ").length < 2) return;
   if(spec?.key === key) return;
   cancelSpec();
-  const s = {key, ctl:new AbortController(), text:"", onText:null};
-  s.promise = runAI(buildPrompt([...transcript, {who:"client", text:clientText}]), s.ctl.signal, t=>{ s.text = t; s.onText?.(t); });
+  const s = {key, ctl:new AbortController(), text:"", onText:null, meta:{}};
+  s.promise = runAI(buildPrompt([...transcript, {who:"client", text:clientText}]), s.ctl.signal, t=>{ s.text = t; s.onText?.(t); }, s.meta);
   s.promise.catch(()=>{});
   spec = s;
 }
@@ -271,11 +289,14 @@ async function askAI(fresh){
   spec = null;
   ctl = hit ? hit.ctl : new AbortController(); const my = ctl;
   setTurn("thinking"); $("line").textContent = "Soch raha hai…"; $("altWrap").hidden = true;
-  const live = t=>{ if(my!==ctl) return; const p=parse(t); if(p.line) showSuggestion(p); };
+  const meta = hit ? hit.meta : {};
+  let timed = false;
+  const live = t=>{ if(my!==ctl) return; const p=parse(t); if(!p.line) return;
+    showSuggestion(p); if(!timed){ timed = true; showTiming(meta); } };
   try{
     let text;
     if(hit){ hit.onText = live; if(hit.text) live(hit.text); text = await hit.promise; }
-    else text = await runAI(buildPrompt(), my.signal, live);
+    else text = await runAI(buildPrompt(), my.signal, live, meta);
     if(my!==ctl) return;
     const p = parse(text); showSuggestion(p.line ? p : {line:text.trim(), alt:"", stage:""});
     clearLive(); setTurn("me");
@@ -299,7 +320,7 @@ $("startBtn").onclick = ()=>{ cancelSpec(); transcript=[]; isExample=false; clea
 $("clientFirst").onclick = ()=>{ cancelSpec(); transcript=[]; isExample=false; clearLive(); renderLog(); startMic();
   showSuggestion({line:"Client ko sun raha hoon…", alt:"", stage:"Opening"}); setTurn("client"); };
 $("stopBtn").onclick = ()=>{ if(ctl) ctl.abort(); cancelSpec(); stopMic(); clearLive(); setTurn("idle","Call khatam"); };
-$("typeForm").addEventListener("submit", e=>{ e.preventDefault(); const v=$("typeInput").value; $("typeInput").value=""; clientSaid(v); });
+$("typeForm").addEventListener("submit", e=>{ e.preventDefault(); spokeAt = 0; const v=$("typeInput").value; $("typeInput").value=""; clientSaid(v); });
 
 document.addEventListener("keydown", e=>{
   if(e.target.matches("input,textarea,select")) return;
@@ -343,6 +364,7 @@ function startMic(){
       if(r.isFinal) buf += " "+r[0].transcript; else partial += r[0].transcript; }
     showLive();
     const heard = (buf+" "+partial).trim();
+    if(turn==="client") spokeAt = performance.now();
     clearTimeout(silenceTimer); clearTimeout(specTimer);
     silenceTimer = setTimeout(endOfSpeech, pauseFor(heard));
     if(turn==="client") specTimer = setTimeout(()=>startSpec(heard), 300);
