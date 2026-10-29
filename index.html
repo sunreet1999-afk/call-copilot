@@ -1,0 +1,325 @@
+<title>Live Call Copilot</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Figtree:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: call-desk console. Teleprompter card on top, live mic strip, transcript; setup on the side. */
+:root{
+  --bg:#eef1f0; --panel:#ffffff; --ink:#15211f; --muted:#5a6b68; --line:#d4dcda;
+  --prompt:#fff6dc; --prompt-ink:#2a1f00; --amber:#c07a00; --teal:#0f766e; --client:#7c3aed; --live:#d63b2f;
+  --display:"Familjen Grotesk",system-ui,sans-serif; --body:"Figtree",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0e1514; --panel:#152120; --ink:#e4ecea; --muted:#8fa29e; --line:#263835;
+  --prompt:#2a2410; --prompt-ink:#ffe9a8; --amber:#f2b33d; --teal:#2dd4bf; --client:#b49cff; --live:#ff6b5e; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e1514; --panel:#152120; --ink:#e4ecea; --muted:#8fa29e; --line:#263835;
+  --prompt:#2a2410; --prompt-ink:#ffe9a8; --amber:#f2b33d; --teal:#2dd4bf; --client:#b49cff; --live:#ff6b5e; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 var(--body);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:16px 40px}
+.wrap{max-width:1180px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px}
+@media (max-width:880px){.wrap{grid-template-columns:minmax(0,1fr)}}
+header{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+h1{font:700 22px/1.1 var(--display);margin:0;letter-spacing:-.01em}
+h1 small{display:block;font:500 12px var(--mono);color:var(--muted);letter-spacing:.04em;text-transform:uppercase;margin-top:4px}
+.status{display:flex;align-items:center;gap:8px;font:500 13px var(--mono);padding:6px 12px;border-radius:999px;background:var(--panel);border:1px solid var(--line)}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--muted)}
+.status[data-s="client"] .dot{background:var(--client);animation:pulse 1.2s infinite}
+.status[data-s="me"] .dot{background:var(--teal);animation:pulse 1.2s infinite}
+.status[data-s="thinking"] .dot{background:var(--amber)}
+@keyframes pulse{50%{opacity:.3}}
+@media (prefers-reduced-motion:reduce){.status .dot{animation:none!important}}
+main{display:flex;flex-direction:column;gap:16px;min-width:0}
+.prompter{background:var(--prompt);color:var(--prompt-ink);border-radius:14px;padding:22px 24px;display:flex;flex-direction:column;gap:14px;min-height:220px}
+.ptop{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font:500 12px var(--mono);text-transform:uppercase;letter-spacing:.06em}
+.stage{padding:2px 10px;border-radius:999px;border:1px solid currentColor;opacity:.85}
+.line{font:600 clamp(22px,3.2vw,34px)/1.25 var(--display);margin:0;text-wrap:balance;min-height:1.25em}
+.alt{font-size:15px;opacity:.85;margin:0}
+.alt b{font:500 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;margin-right:6px}
+.actions{display:flex;flex-wrap:wrap;gap:8px}
+button{font:600 14px var(--body);border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:10px 14px;cursor:pointer}
+button:hover{border-color:var(--teal)}
+button:focus-visible,textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+button:disabled{opacity:.45;cursor:not-allowed}
+.primary{background:var(--teal);border-color:var(--teal);color:var(--bg)}
+.danger{color:var(--live)}
+.prompter button{background:transparent;color:var(--prompt-ink);border-color:color-mix(in srgb,var(--prompt-ink) 35%,transparent)}
+kbd{font:500 11px var(--mono);border:1px solid currentColor;border-radius:4px;padding:0 4px;margin-left:6px;opacity:.7}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+.heard{font:500 12px var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:0 0 6px}
+.live{min-height:28px;font-size:17px}
+.live[data-who="client"]{color:var(--client)} .live[data-who="me"]{color:var(--teal)}
+.typerow{display:flex;gap:8px;margin-top:10px}
+.typerow input{flex:1;min-width:0}
+input,textarea,select{font:15px var(--body);color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;width:100%}
+input[type=range]{padding:0}
+textarea{resize:vertical}
+.log{display:flex;flex-direction:column;gap:10px;max-height:380px;overflow:auto}
+.msg{display:grid;grid-template-columns:96px minmax(0,1fr);gap:10px;align-items:baseline}
+.who{font:500 11px var(--mono);text-transform:uppercase;letter-spacing:.06em}
+.msg.me .who{color:var(--teal)} .msg.client .who{color:var(--client)}
+.empty{color:var(--muted);font-size:14px}
+.tag{font:500 11px var(--mono);color:var(--amber);text-transform:uppercase;letter-spacing:.06em}
+aside{display:flex;flex-direction:column;gap:12px;min-width:0}
+aside h2{font:600 16px var(--display);margin:0}
+label{display:flex;flex-direction:column;gap:4px;font:500 12px var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.note{font-size:13px;color:var(--muted);margin:0}
+.warn{font-size:13px;background:color-mix(in srgb,var(--live) 12%,transparent);border-radius:10px;padding:10px 12px;margin:10px 0 0}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.keyhot{border:2px solid var(--amber);border-radius:12px;padding:10px}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Live Call Copilot<small>Hands-free · mic se sunta hai, agli line screen pe</small></h1>
+    <div class="status" id="status" data-s="idle"><span class="dot"></span><span id="statusText">Ready</span></div>
+  </header>
+
+  <main>
+    <section class="prompter" aria-live="polite">
+      <div class="ptop"><span id="ptopLabel">Ab ye bolo</span><span class="stage" id="stage">Discovery</span></div>
+      <p class="line" id="line">Can I ask, are you facing any difficulty running your restaurant right now?</p>
+      <p class="alt" id="altWrap"><b>Alt</b><span id="alt">I run restaurants myself, so I'm calling owners to hear what's eating their time.</span></p>
+      <div class="actions">
+        <button id="saidMain">Bol diya, ab client <kbd>1</kbd></button>
+        <button id="regen">Doosri line do <kbd>R</kbd></button>
+      </div>
+    </section>
+
+    <section class="card">
+      <p class="heard" id="liveLabel">Mic</p>
+      <div class="live" id="live" data-who="client"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="startBtn">Call shuru karo</button>
+        <button id="clientFirst">Client pehle bolega</button>
+        <button id="doneBtn">Client ruk gaya <kbd>Enter</kbd></button>
+        <button class="danger" id="stopBtn">Call khatam</button>
+      </div>
+      <form class="typerow" id="typeForm">
+        <input id="typeInput" placeholder="Mic na chale to client ki baat yahan type karo" autocomplete="off">
+        <button type="submit">Bhejo</button>
+      </form>
+      <p class="warn" id="micWarn" hidden></p>
+    </section>
+
+    <section class="card">
+      <p class="heard">Transcript <span class="tag" id="exampleTag">· Example</span></p>
+      <div class="log" id="log"></div>
+    </section>
+  </main>
+
+  <aside class="card">
+    <h2>Call setup</h2>
+    <div id="keyBox" class="keyhot" hidden>
+      <label for="cKey">Anthropic API key<input id="cKey" type="password" placeholder="sk-ant-..." autocomplete="off"></label>
+      <p class="note" style="margin-top:6px">Key sirf is computer ke browser mein save rehti hai.</p>
+      <p class="note" id="cost" style="margin-top:6px">0 lines · approx $0.0000 kharch</p>
+    </div>
+    <label for="cName">Salesperson naam<input id="cName"></label>
+    <label for="cOffer">Kya bech rahe ho<textarea id="cOffer" rows="4"></textarea></label>
+    <label for="cGoal">Call ka goal<textarea id="cGoal" rows="2"></textarea></label>
+    <label for="cObj">Common objections aur jawab<textarea id="cObj" rows="5"></textarea></label>
+    <label for="cLang">Suggestion ki language
+      <select id="cLang"><option value="English">English</option><option value="Hinglish">Hinglish</option><option value="Hindi">Hindi</option></select>
+    </label>
+    <label for="cMic">Mic language
+      <select id="cMic"><option value="en-US">English (US)</option><option value="en-IN">English (India)</option><option value="hi-IN">Hindi</option></select>
+    </label>
+    <label for="cPause">Pause detect: <span id="pauseVal">1.2</span> sec
+      <input id="cPause" type="range" min="0.6" max="2.5" step="0.1">
+    </label>
+    <p class="note">Laptop speaker pe call rakho, headphones nahi. Tabhi mic dono awaaz sunega.</p>
+  </aside>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const DEFAULTS = {
+  cName: "Bourat",
+  cOffer: "AI automation for restaurants. I run restaurants myself in India, so I know the daily problems. We find the restaurant's biggest pain point (missed calls, online orders, reviews, inventory, staff reports) and build an AI fix. Client pays only if the problem actually gets solved.",
+  cGoal: "Find their biggest operational pain point and book a 15-minute follow-up call.",
+  cObj: "Why do you want to know? -> I want to help restaurant owners; I run restaurants too and see the same problems.\nNo time -> Totally get it, one quick question and I'll let you go.\nHow much does it cost? -> Nothing unless it actually solves your problem.\nNot interested -> No problem. Just curious, what takes most of your time every week?",
+  cLang: "English", cMic: "en-US", cPause: "1.2", cKey: ""
+};
+const FIELDS = Object.keys(DEFAULTS);
+function load(){ let s={}; try{ s=JSON.parse(localStorage.getItem("copilotSetup")||"{}") }catch(e){}
+  FIELDS.forEach(f=>{ $(f).value = s[f] ?? DEFAULTS[f]; }); $("pauseVal").textContent=$("cPause").value; }
+function save(){ const s={}; FIELDS.forEach(f=>s[f]=$(f).value); try{ localStorage.setItem("copilotSetup",JSON.stringify(s)) }catch(e){} }
+FIELDS.forEach(f=>{ $(f).addEventListener("input",save); $(f).addEventListener("change",save); });
+$("cPause").addEventListener("input",()=>$("pauseVal").textContent=$("cPause").value);
+load();
+
+// ---------- state ----------
+let transcript = [
+  {who:"me", text:"Hi, my name is Bourat, how are you doing?"},
+  {who:"client", text:"Great."}
+];
+let isExample = true;
+let turn = "idle";          // idle | me | client | thinking
+let current = {line:"", alt:"", stage:""};
+let buf = "", partial = "";
+let ctl = null, spent = 0, calls = 0;
+
+const STATUS = {idle:"Ready", me:"Tumhari baari: line bolo", client:"Client ko sun raha hai", thinking:"Line bana raha hai…"};
+function setTurn(t, label){
+  turn = t; $("status").dataset.s = t; $("statusText").textContent = label || STATUS[t];
+  $("saidMain").disabled = t!=="me";
+  $("doneBtn").disabled = t!=="client";
+  $("regen").disabled = t==="thinking";
+  $("live").dataset.who = t==="me" ? "me" : "client";
+  $("liveLabel").textContent = t==="me" ? "Tum bol rahe ho" : t==="client" ? "Client bol raha hai" : "Mic";
+}
+function renderLog(){
+  const log = $("log"); log.textContent = "";
+  if(!transcript.length){ const p=document.createElement("p"); p.className="empty"; p.textContent="Call shuru karo. Har line yahan aayegi."; log.append(p); }
+  transcript.forEach(t=>{ const d=document.createElement("div"); d.className="msg "+t.who;
+    const w=document.createElement("span"); w.className="who"; w.textContent = t.who==="me" ? $("cName").value||"Salesperson" : "Client";
+    const x=document.createElement("span"); x.textContent=t.text; d.append(w,x); log.append(d); });
+  log.scrollTop = log.scrollHeight;
+  $("exampleTag").hidden = !isExample;
+}
+function showSuggestion(s){ current = s; $("line").textContent = s.line || "…"; $("alt").textContent = s.alt||""; $("altWrap").hidden = !s.alt; $("stage").textContent = s.stage || "—"; }
+function showLive(){ $("live").textContent = (buf+" "+partial).trim(); }
+function clearLive(){ buf=""; partial=""; showLive(); }
+
+// ---------- AI ----------
+let sample = null;
+(async()=>{ try{ if(window.claude?.use) sample = await window.claude.use("sample"); }catch(e){}
+  $("keyBox").hidden = !!sample; })();
+
+function buildPrompt(){
+  const conv = transcript.slice(-30).map(t=>(t.who==="me"?"Salesperson":"Client")+": "+t.text).join("\n") || "(call has not started yet)";
+  return `You are a live sales-call copilot. Write the NEXT line the salesperson should say out loud, right now. The transcript comes from speech recognition, so expect small errors and guess the intended words.
+
+SALESPERSON NAME: ${$("cName").value}
+WHAT WE SELL: ${$("cOffer").value}
+CALL GOAL: ${$("cGoal").value}
+OBJECTIONS AND GOOD ANSWERS:
+${$("cObj").value}
+
+TRANSCRIPT SO FAR:
+${conv}
+
+Rules:
+- One natural spoken line, max 30 words, in ${$("cLang").value}. Sound like a real person, not a script.
+- Respond directly to the client's last words first, then move one step toward the call goal.
+- In discovery, ask one open question at a time. Handle objections calmly using the answers above.
+- Never invent prices, results or facts that are not in the context.
+- If the transcript is empty, write the opening line (greet, say your name, ask how they are).
+
+Reply in exactly this format, nothing else:
+LINE: <the line>
+ALT: <a different approach, max 25 words>
+STAGE: <one of Opening, Discovery, Pitch, Objection, Close>`;
+}
+function parse(text){
+  const get = k => { const m = text.match(new RegExp(k+":\\s*([\\s\\S]*?)(?=\\n\\s*(?:LINE|ALT|STAGE):|$)")); return m ? m[1].trim() : ""; };
+  return { line:get("LINE"), alt:get("ALT"), stage:get("STAGE") };
+}
+async function callAnthropic(prompt, signal){
+  const key = $("cKey").value.trim(); if(!key) throw {code:"nokey"};
+  const res = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",signal,
+    headers:{"content-type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+    body:JSON.stringify({model:"claude-haiku-5-5",max_tokens:200,stream:true,messages:[{role:"user",content:prompt}]})});
+  if(!res.ok){ const j = await res.json().catch(()=>({})); throw {code: res.status===401?"badkey":"api", message:j?.error?.message||("HTTP "+res.status)}; }
+  const reader = res.body.getReader(), dec = new TextDecoder();
+  let sse="", text="", inTok=0, outTok=0;
+  while(true){
+    const {value, done} = await reader.read(); if(done) break;
+    sse += dec.decode(value,{stream:true});
+    let i; while((i = sse.indexOf("\n\n")) >= 0){
+      const chunk = sse.slice(0,i); sse = sse.slice(i+2);
+      const dl = chunk.split("\n").find(l=>l.startsWith("data:")); if(!dl) continue;
+      let ev; try{ ev = JSON.parse(dl.slice(5)); }catch(e){ continue; }
+      if(ev.type==="message_start") inTok = ev.message?.usage?.input_tokens || 0;
+      else if(ev.type==="content_block_delta" && ev.delta?.text){ text += ev.delta.text; const p=parse(text); if(p.line) showSuggestion(p); }
+      else if(ev.type==="message_delta") outTok = ev.usage?.output_tokens || outTok;
+      else if(ev.type==="error") throw {code:"api", message:ev.error?.message};
+    }
+  }
+  spent += (inTok*0.10 + outTok*0.50)/1e6; calls++;
+  $("cost").textContent = `${calls} lines · approx $${spent.toFixed(4)} kharch`;
+  return text;
+}
+async function askAI(){
+  if(ctl) ctl.abort(); ctl = new AbortController(); const my = ctl;
+  setTurn("thinking"); $("line").textContent = "Soch raha hai…"; $("altWrap").hidden = true;
+  try{
+    let text;
+    if(sample){
+      const r = await sample(buildPrompt(), { modelTier:"quick", cache:false, signal:my.signal,
+        onText:({text:t})=>{ const p=parse(t); if(p.line) showSuggestion(p); } });
+      text = r.text;
+    } else text = await callAnthropic(buildPrompt(), my.signal);
+    if(my!==ctl) return;
+    const p = parse(text); showSuggestion(p.line ? p : {line:text.trim(), alt:"", stage:""});
+    clearLive(); setTurn("me");
+  }catch(e){
+    if(e?.code==="cancelled" || e?.name==="AbortError") return;
+    const msg = {nokey:"Right side Setup mein API key daalo, phir 'Doosri line do' dabao.", badkey:"API key galat hai. Setup mein sahi key daalo.",
+      not_granted:"Claude use karne ki permission nahi mili. Page reload karke Allow karo.",
+      rate_limited:"Bahut zyada requests. Thoda ruk ke 'Doosri line do' dabao.", api:"API error: "+(e?.message||"")}[e?.code] || "Line nahi bani. 'Doosri line do' dabao.";
+    showSuggestion({line:msg, alt:"", stage:"—"}); setTurn("idle","Error"); $("regen").disabled=false;
+  }
+}
+
+// ---------- turns ----------
+function meSaid(text){ if(!text) return; isExample=false; transcript.push({who:"me", text}); renderLog(); clearLive(); setTurn("client"); }
+function clientSaid(text){ text=text.trim(); if(!text) return; isExample=false; transcript.push({who:"client", text}); renderLog(); clearLive(); askAI(); }
+
+$("saidMain").onclick = ()=>{ const spoken=(buf+" "+partial).trim(); meSaid(spoken || current.line); };
+$("regen").onclick = ()=>askAI();
+$("doneBtn").onclick = ()=>{ const t=(buf+" "+partial).trim(); if(t) clientSaid(t); };
+$("startBtn").onclick = ()=>{ transcript=[]; isExample=false; clearLive(); renderLog(); startMic(); askAI(); };
+$("clientFirst").onclick = ()=>{ transcript=[]; isExample=false; clearLive(); renderLog(); startMic();
+  showSuggestion({line:"Client ko sun raha hoon…", alt:"", stage:"Opening"}); setTurn("client"); };
+$("stopBtn").onclick = ()=>{ if(ctl) ctl.abort(); stopMic(); clearLive(); setTurn("idle","Call khatam"); };
+$("typeForm").addEventListener("submit", e=>{ e.preventDefault(); const v=$("typeInput").value; $("typeInput").value=""; clientSaid(v); });
+
+document.addEventListener("keydown", e=>{
+  if(e.target.matches("input,textarea,select")) return;
+  if(e.key==="1" && !$("saidMain").disabled) $("saidMain").click();
+  else if(e.key.toLowerCase()==="r" && !$("regen").disabled) $("regen").click();
+  else if(e.key==="Enter" && turn==="client") $("doneBtn").click();
+});
+
+// ---------- mic: hands-free turn taking ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, micOn = false, silenceTimer = null, waitFinal = 0;
+function micWarn(t){ $("micWarn").textContent=t; $("micWarn").hidden=!t; }
+function endOfSpeech(){
+  if(partial.trim() && waitFinal < 3){ waitFinal++; silenceTimer = setTimeout(endOfSpeech, 400); return; }
+  const t = (buf+" "+partial).trim(); waitFinal = 0;
+  if(!t) return;
+  if(turn==="me") meSaid(t);
+  else if(turn==="client") clientSaid(t);
+}
+function startMic(){
+  if(!SR){ micWarn("Is browser mein mic transcription nahi hai. Google Chrome use karo, ya client ki baat type karo."); return; }
+  if(micOn) return;
+  rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = $("cMic").value;
+  rec.onresult = ev=>{
+    if(turn!=="me" && turn!=="client") return;   // AI soch raha hai: ignore
+    partial = "";
+    for(let i=ev.resultIndex;i<ev.results.length;i++){ const r=ev.results[i];
+      if(r.isFinal) buf += " "+r[0].transcript; else partial += r[0].transcript; }
+    showLive();
+    clearTimeout(silenceTimer); waitFinal = 0;
+    silenceTimer = setTimeout(endOfSpeech, parseFloat($("cPause").value)*1000);
+  };
+  rec.onerror = ev=>{
+    if(ev.error==="not-allowed" || ev.error==="service-not-allowed"){ micOn=false;
+      micWarn(location.protocol==="file:" ? "Mic block hai kyunki file direct khuli hai. 'Start Call Copilot.bat' se kholo."
+        : "Mic block hai. Address bar mein mic icon pe click karke Allow karo, phir 'Call shuru karo' dabao. Claude ke andar mic nahi chalta, downloaded version use karo."); }
+    else if(ev.error==="audio-capture"){ micWarn("Mic nahi mila. Windows Settings > Privacy > Microphone mein Chrome ko allow karo."); }
+  };
+  rec.onend = ()=>{ if(micOn){ try{ rec.start(); }catch(e){} } };
+  try{ rec.start(); micOn = true; micWarn(""); }catch(e){ micWarn("Mic start nahi hua. Type karke use karo."); }
+}
+function stopMic(){ micOn=false; clearTimeout(silenceTimer); try{ rec && rec.stop(); }catch(e){} }
+$("cMic").addEventListener("change", ()=>{ if(micOn){ stopMic(); setTimeout(startMic,300); } });
+
+// example state at rest
+renderLog(); current = {line:$("line").textContent, alt:$("alt").textContent, stage:"Discovery"};
+setTurn("idle","Example dikh raha hai"); $("saidMain").disabled = true;
+</script>
