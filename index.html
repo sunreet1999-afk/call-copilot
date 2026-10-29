@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Live Call Copilot</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -128,6 +129,7 @@ label{display:flex;flex-direction:column;gap:4px;font:500 12px var(--mono);color
     <label for="cPause">Pause detect: <span id="pauseVal">1.2</span> sec
       <input id="cPause" type="range" min="0.6" max="2.5" step="0.1">
     </label>
+    <p class="note">Line poori lage to isse aadha wait karta hai, aur client ke chup hote hi agli line banana shuru kar deta hai.</p>
     <p class="note">Laptop speaker pe call rakho, headphones nahi. Tabhi mic dono awaaz sunega.</p>
   </aside>
 </div>
@@ -187,8 +189,8 @@ let sample = null;
 (async()=>{ try{ if(window.claude?.use) sample = await window.claude.use("sample"); }catch(e){}
   $("keyBox").hidden = !!sample; })();
 
-function buildPrompt(){
-  const conv = transcript.slice(-30).map(t=>(t.who==="me"?"Salesperson":"Client")+": "+t.text).join("\n") || "(call has not started yet)";
+function buildPrompt(list = transcript){
+  const conv = list.slice(-30).map(t=>(t.who==="me"?"Salesperson":"Client")+": "+t.text).join("\n") || "(call has not started yet)";
   return `You are a live sales-call copilot. Write the NEXT line the salesperson should say out loud, right now. The transcript comes from speech recognition, so expect small errors and guess the intended words.
 
 SALESPERSON NAME: ${$("cName").value}
@@ -216,14 +218,16 @@ function parse(text){
   const get = k => { const m = text.match(new RegExp(k+":\\s*([\\s\\S]*?)(?=\\n\\s*(?:LINE|ALT|STAGE):|$)")); return m ? m[1].trim() : ""; };
   return { line:get("LINE"), alt:get("ALT"), stage:get("STAGE") };
 }
-async function callAnthropic(prompt, signal){
+function showCost(){ $("cost").textContent = `${calls} lines · approx $${spent.toFixed(4)} kharch`; }
+async function callAnthropic(prompt, signal, onText){
   const key = $("cKey").value.trim(); if(!key) throw {code:"nokey"};
   const res = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",signal,
     headers:{"content-type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
     body:JSON.stringify({model:"claude-haiku-5-5",max_tokens:200,stream:true,messages:[{role:"user",content:prompt}]})});
   if(!res.ok){ const j = await res.json().catch(()=>({})); throw {code: res.status===401?"badkey":"api", message:j?.error?.message||("HTTP "+res.status)}; }
   const reader = res.body.getReader(), dec = new TextDecoder();
-  let sse="", text="", inTok=0, outTok=0;
+  // cost is added as tokens arrive, so cancelled speculative calls are counted too
+  let sse="", text="", outTok=0;
   while(true){
     const {value, done} = await reader.read(); if(done) break;
     sse += dec.decode(value,{stream:true});
@@ -231,26 +235,47 @@ async function callAnthropic(prompt, signal){
       const chunk = sse.slice(0,i); sse = sse.slice(i+2);
       const dl = chunk.split("\n").find(l=>l.startsWith("data:")); if(!dl) continue;
       let ev; try{ ev = JSON.parse(dl.slice(5)); }catch(e){ continue; }
-      if(ev.type==="message_start") inTok = ev.message?.usage?.input_tokens || 0;
-      else if(ev.type==="content_block_delta" && ev.delta?.text){ text += ev.delta.text; const p=parse(text); if(p.line) showSuggestion(p); }
-      else if(ev.type==="message_delta") outTok = ev.usage?.output_tokens || outTok;
+      if(ev.type==="message_start"){ spent += (ev.message?.usage?.input_tokens || 0)*0.10/1e6; showCost(); }
+      else if(ev.type==="content_block_delta" && ev.delta?.text){ text += ev.delta.text; onText(text); }
+      else if(ev.type==="message_delta"){ const o = ev.usage?.output_tokens || outTok; spent += (o-outTok)*0.50/1e6; outTok = o; showCost(); }
       else if(ev.type==="error") throw {code:"api", message:ev.error?.message};
     }
   }
-  spent += (inTok*0.10 + outTok*0.50)/1e6; calls++;
-  $("cost").textContent = `${calls} lines · approx $${spent.toFixed(4)} kharch`;
+  calls++; showCost();
   return text;
 }
-async function askAI(){
-  if(ctl) ctl.abort(); ctl = new AbortController(); const my = ctl;
+async function runAI(prompt, signal, onText){
+  if(sample) return (await sample(prompt, { modelTier:"quick", cache:false, signal, onText:({text})=>onText(text) })).text;
+  return callAnthropic(prompt, signal, onText);
+}
+
+// ---------- speculative: client ke chup hote hi line banana shuru, commit pe wahi use ----------
+const norm = s => s.toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu," ").trim();
+let spec = null;   // {key, ctl, promise, text, onText}
+function cancelSpec(){ if(spec){ spec.ctl.abort(); spec = null; } }
+function startSpec(clientText){
+  const key = norm(clientText); if(key.split(" ").length < 2) return;
+  if(spec?.key === key) return;
+  cancelSpec();
+  const s = {key, ctl:new AbortController(), text:"", onText:null};
+  s.promise = runAI(buildPrompt([...transcript, {who:"client", text:clientText}]), s.ctl.signal, t=>{ s.text = t; s.onText?.(t); });
+  s.promise.catch(()=>{});
+  spec = s;
+}
+
+async function askAI(fresh){
+  if(ctl) ctl.abort();
+  const last = transcript[transcript.length-1];
+  const hit = !fresh && spec && last?.who==="client" && spec.key===norm(last.text) ? spec : null;
+  if(!hit) cancelSpec();
+  spec = null;
+  ctl = hit ? hit.ctl : new AbortController(); const my = ctl;
   setTurn("thinking"); $("line").textContent = "Soch raha hai…"; $("altWrap").hidden = true;
+  const live = t=>{ if(my!==ctl) return; const p=parse(t); if(p.line) showSuggestion(p); };
   try{
     let text;
-    if(sample){
-      const r = await sample(buildPrompt(), { modelTier:"quick", cache:false, signal:my.signal,
-        onText:({text:t})=>{ const p=parse(t); if(p.line) showSuggestion(p); } });
-      text = r.text;
-    } else text = await callAnthropic(buildPrompt(), my.signal);
+    if(hit){ hit.onText = live; if(hit.text) live(hit.text); text = await hit.promise; }
+    else text = await runAI(buildPrompt(), my.signal, live);
     if(my!==ctl) return;
     const p = parse(text); showSuggestion(p.line ? p : {line:text.trim(), alt:"", stage:""});
     clearLive(); setTurn("me");
@@ -268,12 +293,12 @@ function meSaid(text){ if(!text) return; isExample=false; transcript.push({who:"
 function clientSaid(text){ text=text.trim(); if(!text) return; isExample=false; transcript.push({who:"client", text}); renderLog(); clearLive(); askAI(); }
 
 $("saidMain").onclick = ()=>{ const spoken=(buf+" "+partial).trim(); meSaid(spoken || current.line); };
-$("regen").onclick = ()=>askAI();
+$("regen").onclick = ()=>askAI(true);
 $("doneBtn").onclick = ()=>{ const t=(buf+" "+partial).trim(); if(t) clientSaid(t); };
-$("startBtn").onclick = ()=>{ transcript=[]; isExample=false; clearLive(); renderLog(); startMic(); askAI(); };
-$("clientFirst").onclick = ()=>{ transcript=[]; isExample=false; clearLive(); renderLog(); startMic();
+$("startBtn").onclick = ()=>{ cancelSpec(); transcript=[]; isExample=false; clearLive(); renderLog(); startMic(); askAI(true); };
+$("clientFirst").onclick = ()=>{ cancelSpec(); transcript=[]; isExample=false; clearLive(); renderLog(); startMic();
   showSuggestion({line:"Client ko sun raha hoon…", alt:"", stage:"Opening"}); setTurn("client"); };
-$("stopBtn").onclick = ()=>{ if(ctl) ctl.abort(); stopMic(); clearLive(); setTurn("idle","Call khatam"); };
+$("stopBtn").onclick = ()=>{ if(ctl) ctl.abort(); cancelSpec(); stopMic(); clearLive(); setTurn("idle","Call khatam"); };
 $("typeForm").addEventListener("submit", e=>{ e.preventDefault(); const v=$("typeInput").value; $("typeInput").value=""; clientSaid(v); });
 
 document.addEventListener("keydown", e=>{
@@ -285,11 +310,24 @@ document.addEventListener("keydown", e=>{
 
 // ---------- mic: hands-free turn taking ----------
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec = null, micOn = false, silenceTimer = null, waitFinal = 0;
+let rec = null, micOn = false, silenceTimer = null, specTimer = null;
 function micWarn(t){ $("micWarn").textContent=t; $("micWarn").hidden=!t; }
+const DONE_WORDS = new Set(("yes yeah yep no nope okay ok sure right thanks fine great good alright bye busy interested " +
+  "hai hain tha thi haan han nahi nahin na ji theek thik accha achha acha bolo batao kya kyun kaise chahiye hoon hu ho raha rahi rahe gaya gayi diya liya " +
+  "है हैं था थी हाँ हां नहीं ना जी ठीक अच्छा बोलो बताओ क्या क्यों कैसे चाहिए हूँ हूं हो रहा रही रहे गया गई दिया").split(" "));
+const MORE_WORDS = new Set(("and but so because or the a an to of for with my your if um uh like " +
+  "aur lekin par toh ki ke ka mein se ko jo kyunki matlab और लेकिन पर तो कि के का की में से को जो क्योंकि मतलब").split(" "));
+// line poori lage to aadha wait, adhoori lage ("and", "toh"...) to thoda zyada
+function pauseFor(text){
+  const base = parseFloat($("cPause").value)*1000, t = text.trim();
+  const w = (t.toLowerCase().split(/\s+/).pop() || "").replace(/[^\p{L}\p{M}\p{N}]/gu,"");
+  if(/[?.!।]$/.test(t) || DONE_WORDS.has(w)) return Math.max(350, base*0.5);
+  if(MORE_WORDS.has(w)) return Math.min(2500, base*1.5);
+  return base;
+}
 function endOfSpeech(){
-  if(partial.trim() && waitFinal < 3){ waitFinal++; silenceTimer = setTimeout(endOfSpeech, 400); return; }
-  const t = (buf+" "+partial).trim(); waitFinal = 0;
+  clearTimeout(specTimer);
+  const t = (buf+" "+partial).trim();
   if(!t) return;
   if(turn==="me") meSaid(t);
   else if(turn==="client") clientSaid(t);
@@ -304,8 +342,10 @@ function startMic(){
     for(let i=ev.resultIndex;i<ev.results.length;i++){ const r=ev.results[i];
       if(r.isFinal) buf += " "+r[0].transcript; else partial += r[0].transcript; }
     showLive();
-    clearTimeout(silenceTimer); waitFinal = 0;
-    silenceTimer = setTimeout(endOfSpeech, parseFloat($("cPause").value)*1000);
+    const heard = (buf+" "+partial).trim();
+    clearTimeout(silenceTimer); clearTimeout(specTimer);
+    silenceTimer = setTimeout(endOfSpeech, pauseFor(heard));
+    if(turn==="client") specTimer = setTimeout(()=>startSpec(heard), 300);
   };
   rec.onerror = ev=>{
     if(ev.error==="not-allowed" || ev.error==="service-not-allowed"){ micOn=false;
@@ -316,7 +356,7 @@ function startMic(){
   rec.onend = ()=>{ if(micOn){ try{ rec.start(); }catch(e){} } };
   try{ rec.start(); micOn = true; micWarn(""); }catch(e){ micWarn("Mic start nahi hua. Type karke use karo."); }
 }
-function stopMic(){ micOn=false; clearTimeout(silenceTimer); try{ rec && rec.stop(); }catch(e){} }
+function stopMic(){ micOn=false; clearTimeout(silenceTimer); clearTimeout(specTimer); try{ rec && rec.stop(); }catch(e){} }
 $("cMic").addEventListener("change", ()=>{ if(micOn){ stopMic(); setTimeout(startMic,300); } });
 
 // example state at rest
