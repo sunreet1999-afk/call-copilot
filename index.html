@@ -397,7 +397,7 @@ document.addEventListener("keydown", e=>{
 
 // ---------- mic: hands-free turn taking ----------
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec = null, micOn = false, silenceTimer = null, specTimer = null, speechEndTimer = null, browserSpeechEnded = false;
+let rec = null, micOn = false, silenceTimer = null, specTimer = null, speechEndTimer = null, browserSpeechEnded = false, chromeVad = null, vadFinishStarted = 0;
 function micWarn(t){ $("micWarn").textContent=t; $("micWarn").hidden=!t; }
 function endOfSpeech(){
   browserSpeechEnded = false; clearTimeout(speechEndTimer);
@@ -408,17 +408,79 @@ function endOfSpeech(){
   if(turn==="me") meSaid(t);
   else if(turn==="client") clientSaid(t);
 }
+function finishVadSpeech(){
+  if(browserSpeechEnded) return;
+  browserSpeechEnded = true; vadFinishStarted = performance.now(); clearTimeout(silenceTimer); clearActivityTimers();
+  setActivity("pausing","Awaaz ruk gayi","Transcript finalize ho raha hai…");
+  try{ rec?.stop(); }catch(e){} // Chrome ko pending words turant dene ke liye
+  const finish = ()=>{
+    const t = (buf+" "+partial).trim();
+    if(t){ vadFinishStarted=0; endOfSpeech(); return; }
+    if(performance.now()-vadFinishStarted<2500){ speechEndTimer=setTimeout(finish,200); return; }
+    browserSpeechEnded=false; vadFinishStarted=0;
+    setActivity(turn==="client" ? "waiting" : "ready",turn==="client" ? "Client ka wait kar raha hoon" : "Ab aap bolo","Awaaz mili, lekin Chrome ne words nahi diye. Thoda paas se dobara boliye.");
+  };
+  speechEndTimer = setTimeout(finish,200);
+}
+function stopChromeVad(){
+  const v = chromeVad; chromeVad = null; if(!v) return;
+  clearInterval(v.timer); v.stream?.getTracks().forEach(t=>t.stop()); v.ctx?.close().catch(()=>{});
+}
+async function startChromeVad(){
+  stopChromeVad();
+  const v = chromeVad = {ready:false, speaking:false, voiceFrames:0, noise:.006, lastVoice:0, calibrateUntil:performance.now()+700};
+  try{
+    v.stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    if(chromeVad!==v){ v.stream.getTracks().forEach(t=>t.stop()); return; }
+    v.ctx = new AudioContext(); v.analyser = v.ctx.createAnalyser(); v.analyser.fftSize = 512; v.analyser.smoothingTimeConstant = .2;
+    v.ctx.createMediaStreamSource(v.stream).connect(v.analyser); v.data = new Float32Array(v.analyser.fftSize);
+    await v.ctx.resume(); v.ready = true;
+    v.timer = setInterval(()=>{
+      if(chromeVad!==v || !micOn) return;
+      v.analyser.getFloatTimeDomainData(v.data);
+      let power=0; for(const x of v.data) power += x*x;
+      const rms = Math.sqrt(power/v.data.length);
+      if(performance.now()<v.calibrateUntil){ v.noise=v.noise*.8+rms*.2; return; }
+      if(turn!=="me" && turn!=="client"){ v.speaking=false; v.voiceFrames=0; v.noise=Math.min(.03,v.noise*.98+rms*.02); return; }
+      const threshold = Math.max(.012,v.noise+.01);
+      const voice = rms>threshold;
+      if(!v.speaking && !voice) v.noise = Math.min(.025,v.noise*.98+rms*.02);
+      if(voice){
+        v.voiceFrames++;
+        if(!v.speaking && v.voiceFrames>=3){
+          v.speaking=true; browserSpeechEnded=false; vadFinishStarted=0; clearTimeout(speechEndTimer); clearTimeout(silenceTimer); clearActivityTimers();
+          setActivity(turn==="me" ? "speaking-me" : "speaking",turn==="me" ? "Aap bol rahe hain…" : "Client bol raha hai…","Mic ki actual awaaz detect ho rahi hai.");
+        }
+        if(v.speaking) v.lastVoice=performance.now();
+      }else{
+        v.voiceFrames=0;
+        if(!v.speaking) return;
+        const quietFor = performance.now()-v.lastVoice, pauseMs = parseFloat($("cPause").value)*1000;
+        if(quietFor>250){
+          const left = Math.max(0,pauseMs-quietFor);
+          setActivity("pausing","Aap chup hain",`${(left/1000).toFixed(1)} sec mein baat poori maani jayegi. Dobara bolenge to timer cancel hoga.`);
+        }
+        if(quietFor>=pauseMs){ v.speaking=false; v.voiceFrames=0; finishVadSpeech(); }
+      }
+    },50);
+  }catch(e){
+    if(chromeVad===v) stopChromeVad();
+    micWarn("Audio silence detector start nahi hua. Mic permission Allow karke page reload karo.");
+  }
+}
 function startMic(){
   if($("cEngine").value==="flux") return startFlux();
   if(!SR){ micWarn("Is browser mein mic transcription nahi hai. Google Chrome use karo, ya client ki baat type karo."); return; }
   if(micOn) return;
   rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = $("cMic").value;
   rec.onspeechstart = ()=>{
+    if(chromeVad?.ready) return;
     if(turn!=="me" && turn!=="client") return;
     browserSpeechEnded = false; clearTimeout(speechEndTimer); clearTimeout(silenceTimer); clearActivityTimers();
     setActivity(turn==="me" ? "speaking-me" : "speaking",turn==="me" ? "Aap bol rahe hain…" : "Client bol raha hai…","Chrome ne awaaz detect kar li hai. Bolna poora hone tak sunta rahega.");
   };
   rec.onspeechend = ()=>{
+    if(chromeVad?.ready) return;
     if(turn!=="me" && turn!=="client") return;
     browserSpeechEnded = true; clearTimeout(silenceTimer); clearActivityTimers();
     silenceDeadline = performance.now()+500; showPauseCountdown();
@@ -430,11 +492,11 @@ function startMic(){
     for(let i=ev.resultIndex;i<ev.results.length;i++){ const r=ev.results[i];
       if(r.isFinal) buf += " "+r[0].transcript; else partial += r[0].transcript; }
     showLive();
-    if(!browserSpeechEnded) scheduleActivityEnd(turn);
+    if(!chromeVad?.ready && !browserSpeechEnded) scheduleActivityEnd(turn);
     const heard = (buf+" "+partial).trim();
     if(turn==="client") spokeAt = performance.now();
     clearTimeout(silenceTimer); clearTimeout(specTimer);
-    if(!browserSpeechEnded) silenceTimer = setTimeout(endOfSpeech, parseFloat($("cPause").value)*1000);
+    if(!chromeVad?.ready && !browserSpeechEnded) silenceTimer = setTimeout(endOfSpeech, parseFloat($("cPause").value)*1000);
     if(turn==="client") specTimer = setTimeout(()=>startSpec(heard), 300);
   };
   rec.onerror = ev=>{
@@ -444,11 +506,11 @@ function startMic(){
     else if(ev.error==="audio-capture"){ micWarn("Mic nahi mila. Windows Settings > Privacy > Microphone mein Chrome ko allow karo."); }
   };
   rec.onend = ()=>{ if(micOn && rec){ try{ rec.start(); }catch(e){} } };
-  try{ rec.start(); micOn = true; micWarn(""); }catch(e){ micWarn("Mic start nahi hua. Type karke use karo."); }
+  try{ rec.start(); micOn = true; micWarn(""); startChromeVad(); }catch(e){ micWarn("Mic start nahi hua. Type karke use karo."); }
 }
-function stopMic(){ micOn=false; browserSpeechEnded=false; clearTimeout(silenceTimer); clearTimeout(specTimer); clearTimeout(speechEndTimer); clearActivityTimers();
+function stopMic(){ micOn=false; browserSpeechEnded=false; vadFinishStarted=0; clearTimeout(silenceTimer); clearTimeout(specTimer); clearTimeout(speechEndTimer); clearActivityTimers();
   if(rec){ const r = rec; rec = null; try{ r.stop(); }catch(e){} }
-  stopFlux(); }
+  stopChromeVad(); stopFlux(); }
 ["cMic","cEngine"].forEach(id=>$(id).addEventListener("change", ()=>{ if(micOn){ stopMic(); setTimeout(startMic,300); } }));
 
 // ---------- mic: Deepgram Flux (model khud batata hai ki baat kab khatam hui) ----------
