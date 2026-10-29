@@ -31,6 +31,26 @@ h1 small{display:block;font:500 12px var(--mono);color:var(--muted);letter-spaci
 .status[data-s="thinking"] .dot{background:var(--amber)}
 @keyframes pulse{50%{opacity:.3}}
 @media (prefers-reduced-motion:reduce){.status .dot{animation:none!important}}
+
+.voiceState{display:flex;align-items:center;gap:14px;margin-bottom:12px;padding:14px 16px;border:2px solid var(--line);border-radius:12px;background:var(--bg);transition:border-color .2s,background .2s}
+.voiceBars{height:28px;display:flex;align-items:center;gap:3px;flex:0 0 31px}
+.voiceBars i{display:block;width:5px;height:8px;border-radius:99px;background:var(--muted);opacity:.55}
+.voiceCopy{display:flex;flex-direction:column;min-width:0}
+.voiceMain{font:700 15px/1.2 var(--display);letter-spacing:.035em;text-transform:uppercase}
+.voiceDetail{font:500 12px/1.35 var(--mono);color:var(--muted);margin-top:3px}
+.voiceState[data-v="waiting"]{border-color:var(--client)}
+.voiceState[data-v="speaking"]{border-color:var(--client);background:color-mix(in srgb,var(--client) 9%,var(--bg))}
+.voiceState[data-v="speaking-me"],.voiceState[data-v="ready"]{border-color:var(--teal);background:color-mix(in srgb,var(--teal) 9%,var(--bg))}
+.voiceState[data-v="pausing"]{border-color:var(--amber);background:color-mix(in srgb,var(--amber) 10%,var(--bg))}
+.voiceState[data-v="thinking"]{border-color:var(--amber)}
+.voiceState[data-v="speaking"] .voiceBars i,.voiceState[data-v="speaking-me"] .voiceBars i{background:currentColor;animation:voiceBar .65s ease-in-out infinite alternate;opacity:1}
+.voiceState[data-v="speaking"] .voiceBars i{color:var(--client)}
+.voiceState[data-v="speaking-me"] .voiceBars i{color:var(--teal)}
+.voiceState[data-v="speaking"] .voiceBars i:nth-child(2),.voiceState[data-v="speaking-me"] .voiceBars i:nth-child(2){animation-delay:.15s}
+.voiceState[data-v="speaking"] .voiceBars i:nth-child(3),.voiceState[data-v="speaking-me"] .voiceBars i:nth-child(3){animation-delay:.3s}
+.voiceState[data-v="pausing"] .voiceBars i,.voiceState[data-v="thinking"] .voiceBars i{background:var(--amber)}
+@keyframes voiceBar{to{height:26px}}
+@media (prefers-reduced-motion:reduce){.voiceBars i{animation:none!important}}
 main{display:flex;flex-direction:column;gap:16px;min-width:0}
 .prompter{background:var(--prompt);color:var(--prompt-ink);border-radius:14px;padding:22px 24px;display:flex;flex-direction:column;gap:14px;min-height:220px}
 .ptop{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font:500 12px var(--mono);text-transform:uppercase;letter-spacing:.06em}
@@ -91,6 +111,10 @@ label{display:flex;flex-direction:column;gap:4px;font:500 12px var(--mono);color
     </section>
 
     <section class="card">
+      <div class="voiceState" id="voiceState" data-v="idle">
+        <span class="voiceBars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span class="voiceCopy"><span class="voiceMain" id="voiceMain" role="status" aria-live="polite">Mic ready</span><span class="voiceDetail" id="voiceDetail">Call shuru karne ke baad live status yahan dikhega.</span></span>
+      </div>
       <p class="heard" id="liveLabel">Mic</p>
       <div class="live" id="live" data-who="client"></div>
       <div class="row" style="margin-top:10px">
@@ -153,12 +177,14 @@ const DEFAULTS = {
   cOffer: "AI automation for restaurants. I run restaurants myself in India, so I know the daily problems. We find the restaurant's biggest pain point (missed calls, online orders, reviews, inventory, staff reports) and build an AI fix. Client pays only if the problem actually gets solved.",
   cGoal: "Find their biggest operational pain point and book a 15-minute follow-up call.",
   cObj: "Why do you want to know? -> I want to help restaurant owners; I run restaurants too and see the same problems.\nNo time -> Totally get it, one quick question and I'll let you go.\nHow much does it cost? -> Nothing unless it actually solves your problem.\nNot interested -> No problem. Just curious, what takes most of your time every week?",
-  cLang: "English", cMic: "en-US", cPause: "1.2", cKey: "", cEngine: "chrome", cDgKey: ""
+  cLang: "English", cMic: "en-US", cPause: "1.8", cKey: "", cEngine: "chrome", cDgKey: ""
 };
 const FIELDS = Object.keys(DEFAULTS);
 function load(){ let s={}; try{ s=JSON.parse(localStorage.getItem("copilotSetup")||"{}") }catch(e){}
+  const version = parseInt(localStorage.getItem("copilotSetupVersion")||"1",10);
+  if(version<2 && (!s.cPause || s.cPause==="1.2")) s.cPause="1.8";
   FIELDS.forEach(f=>{ $(f).value = s[f] ?? DEFAULTS[f]; }); $("pauseVal").textContent=$("cPause").value; }
-function save(){ const s={}; FIELDS.forEach(f=>s[f]=$(f).value); try{ localStorage.setItem("copilotSetup",JSON.stringify(s)) }catch(e){} }
+function save(){ const s={}; FIELDS.forEach(f=>s[f]=$(f).value); try{ localStorage.setItem("copilotSetup",JSON.stringify(s)); localStorage.setItem("copilotSetupVersion","2") }catch(e){} }
 FIELDS.forEach(f=>{ $(f).addEventListener("input",save); $(f).addEventListener("change",save); });
 $("cPause").addEventListener("input",()=>$("pauseVal").textContent=$("cPause").value);
 function syncEngine(){ const f = $("cEngine").value==="flux"; $("dgBox").hidden = !f; $("pauseBox").hidden = f; }
@@ -177,13 +203,42 @@ let buf = "", partial = "";
 let ctl = null, spent = 0, calls = 0;
 
 const STATUS = {idle:"Ready", me:"Tumhari baari: line bolo", client:"Client ko sun raha hai", thinking:"Line bana raha hai…"};
+let activityTimer = null, pauseUiTimer = null, silenceDeadline = 0;
+function setActivity(state, main, detail=""){
+  $("voiceState").dataset.v = state;
+  $("voiceMain").textContent = main;
+  $("voiceDetail").textContent = detail;
+}
+function clearActivityTimers(){
+  clearInterval(activityTimer); clearTimeout(pauseUiTimer);
+  activityTimer = null; pauseUiTimer = null; silenceDeadline = 0;
+}
+function showPauseCountdown(){
+  const tick = ()=>{
+    const left = Math.max(0, silenceDeadline-performance.now());
+    setActivity("pausing","Pause detect hua",`${(left/1000).toFixed(1)} sec mein baat poori maani jayegi. Dobara bolne par timer reset hoga.`);
+  };
+  tick(); activityTimer = setInterval(tick,100);
+}
+function scheduleActivityEnd(speaker){
+  clearActivityTimers();
+  const pauseMs = parseFloat($("cPause").value)*1000;
+  silenceDeadline = performance.now()+pauseMs;
+  setActivity(speaker==="me" ? "speaking-me" : "speaking",speaker==="me" ? "Aap bol rahe hain…" : "Client bol raha hai…","Awaaz mil rahi hai. Chhota pause lene par bhi sunta rahega.");
+  pauseUiTimer = setTimeout(showPauseCountdown,Math.min(400,pauseMs/3));
+}
 function setTurn(t, label){
   turn = t; $("status").dataset.s = t; $("statusText").textContent = label || STATUS[t];
   $("saidMain").disabled = t!=="me";
   $("doneBtn").disabled = t!=="client";
   $("regen").disabled = t==="thinking";
   $("live").dataset.who = t==="me" ? "me" : "client";
-  $("liveLabel").textContent = t==="me" ? "Tum bol rahe ho" : t==="client" ? "Client bol raha hai" : "Mic";
+  $("liveLabel").textContent = t==="me" ? "Aapki awaaz" : t==="client" ? "Client ki awaaz" : "Mic";
+  clearActivityTimers();
+  if(t==="client") setActivity("waiting","Client ka wait kar raha hoon","Mic chalu hai—client jaise hi bolega, indicator purple ho jayega.");
+  else if(t==="thinking") setActivity("thinking","Agli line bana raha hoon…","Client ki baat poori ho gayi. AI response tayyar kar raha hai.");
+  else if(t==="me") setActivity("ready","Ab aap bolo","Neeche dikhayi gayi suggested line boliye.");
+  else setActivity("idle",label==="Call khatam" ? "Call khatam" : "Mic ready",label==="Call khatam" ? "Nayi call ke liye ‘Call shuru karo’ dabaiye." : "Call shuru karne ke baad live status yahan dikhega.");
 }
 function renderLog(){
   const log = $("log"); log.textContent = "";
@@ -345,9 +400,10 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, micOn = false, silenceTimer = null, specTimer = null;
 function micWarn(t){ $("micWarn").textContent=t; $("micWarn").hidden=!t; }
 function endOfSpeech(){
+  clearActivityTimers();
   clearTimeout(specTimer);
   const t = (buf+" "+partial).trim();
-  if(!t) return;
+  if(!t){ setActivity(turn==="client" ? "waiting" : "ready",turn==="client" ? "Client ka wait kar raha hoon" : "Ab aap bolo"); return; }
   if(turn==="me") meSaid(t);
   else if(turn==="client") clientSaid(t);
 }
@@ -362,6 +418,7 @@ function startMic(){
     for(let i=ev.resultIndex;i<ev.results.length;i++){ const r=ev.results[i];
       if(r.isFinal) buf += " "+r[0].transcript; else partial += r[0].transcript; }
     showLive();
+    scheduleActivityEnd(turn);
     const heard = (buf+" "+partial).trim();
     if(turn==="client") spokeAt = performance.now();
     clearTimeout(silenceTimer); clearTimeout(specTimer);
@@ -377,7 +434,7 @@ function startMic(){
   rec.onend = ()=>{ if(micOn && rec){ try{ rec.start(); }catch(e){} } };
   try{ rec.start(); micOn = true; micWarn(""); }catch(e){ micWarn("Mic start nahi hua. Type karke use karo."); }
 }
-function stopMic(){ micOn=false; clearTimeout(silenceTimer); clearTimeout(specTimer);
+function stopMic(){ micOn=false; clearTimeout(silenceTimer); clearTimeout(specTimer); clearActivityTimers();
   if(rec){ const r = rec; rec = null; try{ r.stop(); }catch(e){} }
   stopFlux(); }
 ["cMic","cEngine"].forEach(id=>$(id).addEventListener("change", ()=>{ if(micOn){ stopMic(); setTimeout(startMic,300); } }));
@@ -430,10 +487,10 @@ function onFlux(m){
   if(m.event==="EndOfTurn" && m.trigger==="manual") return;   // button wala turn, pehle hi commit ho chuka
   if(turn!=="me" && turn!=="client") return;                 // AI soch raha hai: ignore
   const t = (m.transcript || "").trim();
-  if(m.event==="EndOfTurn"){ clearLive(); if(!t) return; if(turn==="me") meSaid(t); else clientSaid(t); return; }
-  if(t !== buf){ buf = t; partial = ""; showLive(); if(turn==="client") spokeAt = performance.now(); }
-  if(m.event==="EagerEndOfTurn" && turn==="client") startSpec(t);
-  else if(m.event==="TurnResumed") cancelSpec();
+  if(m.event==="EndOfTurn"){ clearActivityTimers(); clearLive(); if(!t) return; if(turn==="me") meSaid(t); else clientSaid(t); return; }
+  if(t !== buf){ buf = t; partial = ""; showLive(); setActivity(turn==="me" ? "speaking-me" : "speaking",turn==="me" ? "Aap bol rahe hain…" : "Client bol raha hai…","Deepgram awaaz ko live samajh raha hai."); if(turn==="client") spokeAt = performance.now(); }
+  if(m.event==="EagerEndOfTurn" && turn==="client"){ setActivity("pausing","Smart pause detect hua","Baat khatam lag rahi hai—client dobara bole to listening continue hogi."); startSpec(t); }
+  else if(m.event==="TurnResumed"){ setActivity(turn==="me" ? "speaking-me" : "speaking",turn==="me" ? "Aap bol rahe hain…" : "Client phir bol raha hai…","Pause cancel ho gaya."); cancelSpec(); }
 }
 
 // example state at rest
