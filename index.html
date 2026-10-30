@@ -156,9 +156,9 @@ label{display:flex;flex-direction:column;gap:4px;font:500 12px var(--mono);color
       <select id="cLang"><option value="English">English</option><option value="Hinglish">Hinglish</option><option value="Hindi">Hindi</option></select>
     </label>
     <label for="cModel">AI model
-      <select id="cModel"><option value="gemini-lite">Cheapest · Gemini 3.5 Flash-Lite</option><option value="gemini-flash">Better Gemini · Gemini 3.8 Flash</option><option value="quality">Best Claude · Sonnet 5</option><option value="fast">Fast Claude · Haiku 4.5</option></select>
+      <select id="cModel"><option value="gemini-lite">Cheapest · Gemini 3.5 Flash-Lite</option><option value="gemini-flash">Fast + better · Gemini 3.6 Flash</option><option value="quality">Best Claude · Sonnet 5</option><option value="fast">Fast Claude · Haiku 4.5</option></select>
     </label>
-    <p class="note">Gemini Flash-Lite cheapest hai. Gemini 3.8 stronger conversation ke liye; Claude models optional hain.</p>
+    <p class="note">Flash-Lite cheapest hai. Gemini 3.6 minimal thinking ke saath faster, stronger conversation ke liye; Claude optional hai.</p>
     <label for="cMic">Mic language
       <select id="cMic"><option value="en-US">English (US)</option><option value="en-IN">English (India)</option><option value="hi-IN">Hindi</option></select>
     </label>
@@ -385,16 +385,16 @@ async function callAnthropic(prompt, signal, onText){
 async function callGemini(prompt, signal, onText){
   const key = $("cGKey").value.trim(); if(!key) throw {code:"nokey"};
   const better = $("cModel").value==="gemini-flash";
-  const model = better ? "gemini-3.8-flash" : "gemini-3.5-flash-lite";
+  const model = better ? "gemini-3.6-flash" : "gemini-3.5-flash-lite";
   const rates = better ? {input:.75,output:3.75} : {input:.30,output:2.50};
-  const thinkingLevel = better ? "low" : "minimal";
+  const thinkingLevel = "minimal";
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`,{
     method:"POST",signal,
     headers:{"content-type":"application/json","x-goog-api-key":key},
     body:JSON.stringify({
       systemInstruction:{parts:[{text:SALES_SYSTEM}]},
       contents:[{role:"user",parts:[{text:prompt}]}],
-      generationConfig:{maxOutputTokens:320,thinkingConfig:{thinkingLevel}}
+      generationConfig:{maxOutputTokens:160,thinkingConfig:{thinkingLevel}}
     })
   });
   if(!res.ok){ const j=await res.json().catch(()=>({})); throw {code:(res.status===400||res.status===401||res.status===403)?"badkey":res.status===429?"rate_limited":"api",message:j?.error?.message||("HTTP "+res.status)}; }
