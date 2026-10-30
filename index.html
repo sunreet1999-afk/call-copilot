@@ -175,7 +175,7 @@ label{display:flex;flex-direction:column;gap:4px;font:500 12px var(--mono);color
       </label>
       <p class="note" style="margin-top:6px">Itni der chup rehne pe baat poori maani jaati hai. Client ke chup hote hi agli line pehle se banna shuru ho jaati hai.</p>
     </div>
-    <p class="note">Laptop speaker pe call rakho, headphones nahi. Tabhi mic dono awaaz sunega.</p>
+    <p class="note">Laptop speaker pe call rakho. Salesperson ki recorded awaaz save nahi hogi; transcript mein sirf client dikhega. AI ko bas screen par di gayi suggested line context ke liye milegi.</p>
   </aside>
 </div>
 
@@ -208,7 +208,6 @@ load(); syncEngine(); syncAIProvider();
 
 // ---------- state ----------
 let transcript = [
-  {who:"me", text:"Thanks for taking a minute. What are the three things taking most of your attention in the restaurant this month?"},
   {who:"client", text:"Staffing, food costs, and missed phone orders."}
 ];
 let isExample = true;
@@ -248,7 +247,7 @@ function setTurn(t, label){
   $("doneBtn").disabled = t!=="client";
   $("regen").disabled = t==="thinking";
   $("live").dataset.who = t==="me" ? "me" : "client";
-  $("liveLabel").textContent = t==="me" ? "Aapki awaaz" : t==="client" ? "Client ki awaaz" : "Mic";
+  $("liveLabel").textContent = t==="me" ? "Line boliye · save nahi hogi" : t==="client" ? "Client ki awaaz" : "Mic";
   clearActivityTimers();
   if(t==="client") setActivity("waiting","Client ka wait kar raha hoon","Mic chalu hai—client jaise hi bolega, indicator purple ho jayega.");
   else if(t==="thinking") setActivity("thinking","Agli line bana raha hoon…","Client ki baat poori ho gayi. AI response tayyar kar raha hai.");
@@ -257,15 +256,16 @@ function setTurn(t, label){
 }
 function renderLog(){
   const log = $("log"); log.textContent = "";
-  if(!transcript.length){ const p=document.createElement("p"); p.className="empty"; p.textContent="Call shuru karo. Har line yahan aayegi."; log.append(p); }
-  transcript.forEach(t=>{ const d=document.createElement("div"); d.className="msg "+t.who;
-    const w=document.createElement("span"); w.className="who"; w.textContent = t.who==="me" ? $("cName").value||"Salesperson" : "Client";
+  const visible = transcript.filter(t=>t.who==="client");
+  if(!visible.length){ const p=document.createElement("p"); p.className="empty"; p.textContent="Call shuru karo. Sirf client ki baat yahan aayegi."; log.append(p); }
+  visible.forEach(t=>{ const d=document.createElement("div"); d.className="msg client";
+    const w=document.createElement("span"); w.className="who"; w.textContent = "Client";
     const x=document.createElement("span"); x.textContent=t.text; d.append(w,x); log.append(d); });
   log.scrollTop = log.scrollHeight;
   $("exampleTag").hidden = !isExample;
 }
 function showSuggestion(s){ current = s; $("line").textContent = s.line || "…"; $("alt").textContent = s.alt||""; $("altWrap").hidden = !s.alt; $("stage").textContent = s.stage || "—"; }
-function showLive(){ $("live").textContent = (buf+" "+partial).trim(); }
+function showLive(){ $("live").textContent = turn==="me" ? "" : (buf+" "+partial).trim(); }
 function clearLive(){ buf=""; partial=""; showLive(); }
 
 // ---------- AI ----------
@@ -303,7 +303,9 @@ NATURAL DIALOGUE RULES:
 - Encourage stories and longer owner turns. Stay on their last answer instead of jumping topics.
 - When they are vague, gently anchor to “the last shift,” “this week,” “the last order,” or “the last time.”
 - When enough evidence exists, give a short tailored connection to the configured offer, then ask for a clear low-pressure next step.
-- If the problem is weak or they do not care, do not manufacture urgency. Thank them and exit gracefully.
+- “No meaningful problem” is a valid discovery outcome. If the owner says things are fine, the issue is rare/minor, the workaround works well, there is no real cost, or they do not care, stop investigating.
+- In that case, write one warm, brief goodbye with no question, no pitch, and no attempt to reopen the conversation. Set STAGE to Close.
+- Never ask a different problem question after the owner has indicated there is nothing important to solve. Do not manufacture urgency.
 
 STYLE:
 - Use the requested language. In English, sound natural for a US business conversation; in Hinglish/Hindi, sound conversational rather than translated.
@@ -329,6 +331,10 @@ LINE: You only pay if the problem is actually solved; I’d first need to unders
 
 Owner: “We manage it somehow.”
 LINE: It sounds workable, but probably not effortless. Walk me through how the team handles it today.
+
+Owner: “Honestly, nothing is really causing us trouble right now. We have it handled.”
+LINE: That’s good to hear. Thanks for being open with me, and I hope business keeps going smoothly—take care.
+STAGE: Close
 
 Return exactly:
 LINE: <best natural next spoken turn>
@@ -485,7 +491,14 @@ async function askAI(fresh){
 }
 
 // ---------- turns ----------
-function meSaid(text){ if(!text) return; isExample=false; transcript.push({who:"me", text}); renderLog(); clearLive(); setTurn("client"); }
+function meSaid(text){
+  const said = current.line || text; if(!said) return;
+  isExample=false; transcript.push({who:"me", text:said, hidden:true}); renderLog(); clearLive();
+  if((current.stage||"").toLowerCase()==="close"){
+    cancelSpec(); stopMic(); setTurn("idle","Call khatam"); return;
+  }
+  setTurn("client");
+}
 function clientSaid(text){ text=text.trim(); if(!text) return; isExample=false; transcript.push({who:"client", text}); renderLog(); clearLive(); askAI(); }
 
 $("saidMain").onclick = ()=>{ fluxForceEnd(); const spoken=(buf+" "+partial).trim(); meSaid(spoken || current.line); };
