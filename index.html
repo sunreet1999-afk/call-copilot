@@ -156,9 +156,9 @@ label{display:flex;flex-direction:column;gap:4px;font:500 12px var(--mono);color
       <select id="cLang"><option value="English">English</option><option value="Hinglish">Hinglish</option><option value="Hindi">Hindi</option></select>
     </label>
     <label for="cModel">AI model
-      <select id="cModel"><option value="gemini-lite">Cheapest · Gemini 3.5 Flash-Lite</option><option value="gemini-flash">Fast + better · Gemini 3.6 Flash</option><option value="quality">Best Claude · Sonnet 5</option><option value="fast">Fast Claude · Haiku 4.5</option></select>
+      <select id="cModel"><option value="quality">Recommended quality · Claude Sonnet 5</option><option value="fast">Faster Claude · Haiku 4.5</option><option value="gemini-flash">Gemini · 3.6 Flash</option><option value="gemini-lite">Cheapest Gemini · 3.5 Flash-Lite</option></select>
     </label>
-    <p class="note">Flash-Lite cheapest hai. Gemini 3.6 minimal thinking ke saath faster, stronger conversation ke liye; Claude optional hai.</p>
+    <p class="note">Natural sales conversation ke liye Claude Sonnet recommended hai. Gemini cheaper hai, lekin discovery-question quality weaker ho sakti hai.</p>
     <label for="cMic">Mic language
       <select id="cMic"><option value="en-US">English (US)</option><option value="en-IN">English (India)</option><option value="hi-IN">Hindi</option></select>
     </label>
@@ -188,7 +188,7 @@ const DEFAULTS = {
   cOffer: "AI automation for restaurants. I run restaurants myself in India, so I know the daily problems. We find the restaurant's biggest pain point (missed calls, online orders, reviews, inventory, staff reports) and build an AI fix. Client pays only if the problem actually gets solved.",
   cGoal: "Discover one recurring, recent and costly operational problem. Understand the last incident, impact, current workaround and urgency before booking a 15-minute follow-up.",
   cObj: "Why do you want to know? -> I want to help restaurant owners; I run restaurants too and see the same problems.\nNo time -> Totally get it, one quick question and I'll let you go.\nHow much does it cost? -> Nothing unless it actually solves your problem.\nNot interested -> No problem. Just curious, what takes most of your time every week?",
-  cLang: "English", cModel: "gemini-lite", cMic: "en-US", cPause: "1.8", cKey: "", cGKey: "", cEngine: "chrome", cDgKey: ""
+  cLang: "English", cModel: "quality", cMic: "en-US", cPause: "1.8", cKey: "", cGKey: "", cEngine: "chrome", cDgKey: ""
 };
 const FIELDS = Object.keys(DEFAULTS);
 function load(){ let s={}; try{ s=JSON.parse(localStorage.getItem("copilotSetup")||"{}") }catch(e){}
@@ -196,8 +196,9 @@ function load(){ let s={}; try{ s=JSON.parse(localStorage.getItem("copilotSetup"
   if(version<2 && (!s.cPause || s.cPause==="1.2")) s.cPause="1.8";
   if(version<3 && s.cGoal==="Find their biggest operational pain point and book a 15-minute follow-up call.") s.cGoal=DEFAULTS.cGoal;
   if(version<4 && (!s.cModel || s.cModel==="quality" || s.cModel==="fast")) s.cModel="gemini-lite";
+  if(version<5 && (!s.cModel || s.cModel.startsWith("gemini-"))) s.cModel="quality";
   FIELDS.forEach(f=>{ $(f).value = s[f] ?? DEFAULTS[f]; }); $("pauseVal").textContent=$("cPause").value; }
-function save(){ const s={}; FIELDS.forEach(f=>s[f]=$(f).value); try{ localStorage.setItem("copilotSetup",JSON.stringify(s)); localStorage.setItem("copilotSetupVersion","4") }catch(e){} }
+function save(){ const s={}; FIELDS.forEach(f=>s[f]=$(f).value); try{ localStorage.setItem("copilotSetup",JSON.stringify(s)); localStorage.setItem("copilotSetupVersion","5") }catch(e){} }
 FIELDS.forEach(f=>{ $(f).addEventListener("input",save); $(f).addEventListener("change",save); });
 $("cPause").addEventListener("input",()=>$("pauseVal").textContent=$("cPause").value);
 function syncEngine(){ const f = $("cEngine").value==="flux"; $("dgBox").hidden = !f; $("pauseBox").hidden = f; }
@@ -306,6 +307,14 @@ NATURAL DIALOGUE RULES:
 - “No meaningful problem” is a valid discovery outcome. If the owner says things are fine, the issue is rare/minor, the workaround works well, there is no real cost, or they do not care, stop investigating.
 - In that case, write one warm, brief goodbye with no question, no pitch, and no attempt to reopen the conversation. Set STAGE to Close.
 - Never ask a different problem question after the owner has indicated there is nothing important to solve. Do not manufacture urgency.
+
+QUESTION QUALITY GATE:
+- Most turns should not contain a question. Ask only when one missing fact would materially change whether this is a real, solvable, important problem.
+- Reject any question that could be asked unchanged to almost any restaurant owner. It must refer to a concrete detail the client just gave.
+- Reject generic prompts such as “What other challenges do you face?”, “Can you tell me more?”, “How does that impact your business?”, and “What is your biggest pain point?”
+- Reject questions already answered by the transcript, broad topic switches, hypothetical questions, obvious questions, and questions asked merely to keep the conversation going.
+- Prefer one precise recent-event question over an abstract business question. “When that happened last Friday, what did the team do with those orders?” is useful; “How does this affect operations?” is not.
+- Before outputting LINE, silently test a proposed question for specificity, relevance, novelty, and naturalness. If it fails any one, output a helpful reaction or graceful close instead.
 
 STYLE:
 - Use the requested language. In English, sound natural for a US business conversation; in Hinglish/Hindi, sound conversational rather than translated.
